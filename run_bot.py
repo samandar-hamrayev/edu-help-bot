@@ -13,7 +13,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from django.conf import settings
 
-from bot.handlers import question, answer, start, common, my_questions
+from bot.handlers import question, answer, start, common, my_questions, admin_questions
 
 async def main():
     logging.basicConfig(level=logging.INFO)
@@ -26,6 +26,7 @@ async def main():
         BotCommand(command="help", description="Yordam"),
         BotCommand(command="question", description="Savol yuborish"),
         BotCommand(command="my_questions", description="Mening savollarim"),
+        BotCommand(command="pending_questions", description="Javob berilmagan savollar (adminlar uchun)"),  # Add this
         BotCommand(command="cancel", description="Amalni bekor qilish"),
     ])
 
@@ -34,6 +35,8 @@ async def main():
     start.register(dp)
     common.register(dp)
     my_questions.register(dp)
+    admin_questions.register(dp)
+
 
     await dp.start_polling(bot)
 
