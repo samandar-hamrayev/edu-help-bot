@@ -1,0 +1,9 @@
+.idea/
+*.pyc
+__pycache__/
+.pytest_cache/
+migrations/
+*.log
+db.sqlite3
+/venv
+/venv/
