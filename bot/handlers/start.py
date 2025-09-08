@@ -19,7 +19,7 @@ async def start_handler(message: Message):
             'first_name': message.from_user.first_name,
             'last_name': message.from_user.last_name,
             'language_code': message.from_user.language_code,
-            'is_admin': str(telegram_id) == str(settings.ADMIN)
+            'is_admin': str(telegram_id) in settings.ADMIN
         }
     )
 
