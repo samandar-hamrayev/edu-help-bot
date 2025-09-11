@@ -110,12 +110,14 @@ def load_required_chats():
     try:
         data = json.loads(chats_json)
         result = []
-        for item in data:
-            if isinstance(item, dict):
-                for chat_id, username in item.items():
-                    result.append((chat_id, username))
+        for chat_info in data:
+            if len(chat_info) >= 2:
+                chat_id, username = chat_info[0], chat_info[1]
+                result.append((chat_id, username))
         return result
-    except:
-        return [('-1002190098663', '@groupfortesting2025')]
+    except Exception as e:
+        print(f"Failed to load required chats: {e}")
+        # Fallback - hardcoded values
+        return []
 
 REQUIRED_CHATS = load_required_chats()
