@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -101,3 +102,20 @@ LOGGING = {
     "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "default"}},
     "root": {"handlers": ["console"], "level": "INFO"},
 }
+
+
+def load_required_chats():
+    chats_json = os.getenv('REQUIRED_CHATS_JSON', '[]')
+
+    try:
+        data = json.loads(chats_json)
+        result = []
+        for item in data:
+            if isinstance(item, dict):
+                for chat_id, username in item.items():
+                    result.append((chat_id, username))
+        return result
+    except:
+        return [('-1002190098663', '@groupfortesting2025')]
+
+REQUIRED_CHATS = load_required_chats()
