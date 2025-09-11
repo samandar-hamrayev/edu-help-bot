@@ -12,8 +12,8 @@ from aiogram.types import BotCommand
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from django.conf import settings
+from bot.dispatcher import register_routers
 
-from bot.handlers import question, answer, start, common, my_questions, admin_questions
 
 async def main():
     logging.basicConfig(level=logging.INFO)
@@ -29,14 +29,7 @@ async def main():
         BotCommand(command="pending_questions", description="Javob berilmagan savollar (adminlar uchun)"),  # Add this
         BotCommand(command="cancel", description="Amalni bekor qilish"),
     ])
-
-    question.register(dp)
-    answer.register(dp)
-    start.register(dp)
-    common.register(dp)
-    my_questions.register(dp)
-    admin_questions.register(dp)
-
+    register_routers(dp)
 
     await dp.start_polling(bot)
 
