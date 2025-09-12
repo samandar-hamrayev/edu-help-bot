@@ -15,8 +15,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # prod'da portni ochmang; dev uchun kerak bo'lsa:
-    # ports: ["5432:5432"]
 
   web:
     build:
@@ -36,8 +34,9 @@ services:
     volumes:
       - staticfiles:/app/staticfiles
       - mediafiles:/app/mediafiles
-    ports:
-      - "8000:8000"
+
+    expose:
+      - "8000"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ || exit 1"]
       interval: 15s
@@ -55,11 +54,26 @@ services:
       web:
         condition: service_started
     command: ["bash", "-lc", "python run_bot.py"]
-    # agar bot media bilan ishlasa, bo'lishamiz:
     volumes:
       - mediafiles:/app/mediafiles
+  nginx:
+    image: nginx:stable
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - staticfiles:/app/staticfiles
+      - mediafiles:/app/mediafiles
+      - certbot-etc:/etc/letsencrypt
+      - certbot-var:/var/lib/letsencrypt
 
 volumes:
   pgdata:
   staticfiles:
   mediafiles:
+  certbot-etc:
+  certbot-var:
