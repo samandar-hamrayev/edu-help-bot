@@ -1,79 +1,79 @@
-version: "3.9"
+# Production-like stack: PostgreSQL + Django admin (gunicorn) + bot worker + nginx.
+# Configure everything through .env (see .env.example).
+
+x-app: &app
+  build: .
+  image: edu-help-bot:latest
+  env_file: .env
+  environment:
+    POSTGRES_HOST: db
+    POSTGRES_PORT: "5432"
+  restart: unless-stopped
 
 services:
   db:
-    image: postgres:16
+    image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: helpbot_db
-      POSTGRES_USER: helpbot_user
-      POSTGRES_PASSWORD: supersecret
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U helpbot_user -d helpbot_db"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
+    <<: *app
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             exec gunicorn -c gunicorn.conf.py config.wsgi:application"
     depends_on:
       db:
         condition: service_healthy
-    # migrate + collectstatic + gunicorn
-    command: >
-      bash -lc "
-      python manage.py migrate --noinput &&
-      python manage.py collectstatic --noinput &&
-      gunicorn config.wsgi:application -b 0.0.0.0:8000 -w 4 --threads 2
-      "
     volumes:
       - staticfiles:/app/staticfiles
-      - mediafiles:/app/mediafiles
-
     expose:
       - "8000"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/ || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
+    # Healthcheck (GET /healthz/, includes a DB query) comes from the Dockerfile.
 
   bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
+    <<: *app
+    command: ["python", "run_bot.py"]
     depends_on:
       db:
         condition: service_healthy
       web:
-        condition: service_started
-    command: ["bash", "-lc", "python run_bot.py"]
-    volumes:
-      - mediafiles:/app/mediafiles
+        condition: service_healthy # web applies migrations first
+    healthcheck:
+      # The answer-outbox loop touches a heartbeat file every few seconds.
+      test: ["CMD", "python", "-m", "bot.healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
   nginx:
-    image: nginx:stable
+    image: nginx:1.27-alpine
     restart: unless-stopped
     depends_on:
-      - web
+      web:
+        condition: service_healthy
     ports:
-      - "80:80"
-      - "443:443"
+      - "${NGINX_PORT:-18580}:80"
     volumes:
-      - ./nginx/conf.d:/etc/nginx/conf.d
-      - staticfiles:/app/staticfiles
-      - mediafiles:/app/mediafiles
-      - certbot-etc:/etc/letsencrypt
-      - certbot-var:/var/lib/letsencrypt
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - staticfiles:/app/staticfiles:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
 volumes:
   pgdata:
   staticfiles:
-  mediafiles:
-  certbot-etc:
-  certbot-var:

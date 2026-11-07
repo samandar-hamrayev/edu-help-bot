@@ -21,7 +21,8 @@ def staff_client(client):
 
 
 def test_healthz(client):
-    response = client.get("/healthz/")
+    # Served before host validation, so an internal Host header is fine.
+    response = client.get("/healthz/", HTTP_HOST="10.0.0.5:8000")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 

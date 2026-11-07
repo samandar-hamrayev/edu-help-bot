@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 
 from aiogram import Bot
 from aiogram.exceptions import (
@@ -26,6 +27,7 @@ from aiogram.exceptions import (
     TelegramRetryAfter,
 )
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.db import close_old_connections
 from django.db.models import F
 from django.utils import timezone
@@ -129,4 +131,13 @@ async def run_outbox(bot: Bot, interval: float) -> None:
             raise
         except Exception:
             logger.exception("Outbox iteration failed")
+        else:
+            touch_heartbeat()
         await asyncio.sleep(interval)
+
+
+def touch_heartbeat() -> None:
+    try:
+        Path(settings.BOT_HEARTBEAT_FILE).touch()
+    except OSError:
+        logger.warning("Cannot write heartbeat file %s", settings.BOT_HEARTBEAT_FILE)

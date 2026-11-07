@@ -132,3 +132,22 @@ async def test_run_outbox_delivers_and_survives_errors(bot, answer, monkeypatch)
         await task
     assert answer.delivery_status == Status.DELIVERED
     assert calls >= 2
+
+
+def test_bot_healthcheck(tmp_path, monkeypatch, settings):
+    import os
+    import time
+
+    from bot import healthcheck
+
+    beat = tmp_path / "beat"
+    monkeypatch.setattr(healthcheck, "HEARTBEAT_FILE", str(beat))
+    assert healthcheck.main() == 1  # missing
+
+    settings.BOT_HEARTBEAT_FILE = str(beat)
+    delivery.touch_heartbeat()
+    assert healthcheck.main() == 0
+
+    old = time.time() - 1000
+    os.utime(beat, (old, old))
+    assert healthcheck.main() == 1

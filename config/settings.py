@@ -94,6 +94,8 @@ REQUIRED_CHATS = parse_required_chats(os.getenv("REQUIRED_CHATS_JSON", "[]"))
 SUPPORT_CONTACT = os.getenv("SUPPORT_CONTACT", "")
 # How often (seconds) the bot worker polls for answers created in the admin panel.
 OUTBOX_POLL_INTERVAL = float(os.getenv("OUTBOX_POLL_INTERVAL", "5"))
+# Touched by the outbox loop; the container healthcheck checks its age.
+BOT_HEARTBEAT_FILE = os.getenv("BOT_HEARTBEAT_FILE", "/tmp/edu-help-bot.heartbeat")  # noqa: S108
 
 # === Installed apps ===
 INSTALLED_APPS = [
@@ -108,6 +110,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "core.middleware.HealthCheckMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
