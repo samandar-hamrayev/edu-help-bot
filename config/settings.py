@@ -68,7 +68,7 @@ SECRET_KEY = os.getenv("SECRET_KEY", "")
 if not SECRET_KEY:
     if DEBUG:
         # Development only: an obviously non-production key.
-        SECRET_KEY = "REDACTED"  # noqa: S105
+        SECRET_KEY = "django-insecure-local-development-only"  # noqa: S105
     else:
         raise ImproperlyConfigured("SECRET_KEY environment variable is required when DEBUG is off.")
 
