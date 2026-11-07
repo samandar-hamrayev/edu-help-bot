@@ -12,9 +12,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# NOTE: secret scanning (gitleaks) will be enabled here after the git
-# history cleanup is finished; until then the old history would fail it.
-
 jobs:
   lint:
     name: Lint (ruff)
@@ -79,3 +76,14 @@ jobs:
           tags: edu-help-bot:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  secrets:
+    name: Secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
