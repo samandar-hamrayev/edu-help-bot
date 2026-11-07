@@ -1,100 +1,67 @@
-# bot/middlewares.py
 import logging
-from aiogram import types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram import BaseMiddleware
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+from aiogram import BaseMiddleware, Bot
+from aiogram.types import CallbackQuery, Message, TelegramObject
 from asgiref.sync import sync_to_async
-from core.models import TelegramUser
-from django.conf import settings
-from bot.bot_instance import bot
+from django.db import close_old_connections
+
+from bot.membership import CHECK_CALLBACK, membership_keyboard, membership_text, missing_chats
+from core.services import is_admin
 
 logger = logging.getLogger(__name__)
 
+Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
+
+# Commands that work without joining the required chats.
+PUBLIC_COMMANDS = frozenset({"/start", "/help", "/cancel"})
+
+
+class DbConnectionMiddleware(BaseMiddleware):
+    """Drop stale/broken DB connections around each update.
+
+    Django normally does this on request start/finish; a long-running bot
+    process has no requests, so without it a Postgres restart would leave the
+    bot with a dead connection forever.
+    """
+
+    async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
+        await sync_to_async(close_old_connections)()
+        try:
+            return await handler(event, data)
+        finally:
+            await sync_to_async(close_old_connections)()
+
+
+def _is_public(event: TelegramObject) -> bool:
+    if isinstance(event, CallbackQuery):
+        return event.data == CHECK_CALLBACK
+    if isinstance(event, Message) and event.text:
+        command = event.text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+        return command in PUBLIC_COMMANDS
+    return False
+
 
 class MembershipMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event, data):
-        if await self._should_skip_middleware(event):
+    """Block users who haven't joined ``REQUIRED_CHATS`` (admins are exempt)."""
+
+    async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
+        user = getattr(event, "from_user", None)
+        if user is None or _is_public(event) or await is_admin(user.id):
             return await handler(event, data)
 
-        user_id = event.from_user.id
-        logger.info(f"User {user_id} is checking membership")
-
-        user = await sync_to_async(TelegramUser.objects.filter(telegram_id=user_id).first)()
-        if user and user.is_admin:
-            logger.info(f"User {user_id} is admin, skipping membership check")
+        bot: Bot = data["bot"]
+        missing = await missing_chats(bot, user.id)
+        if not missing:
             return await handler(event, data)
 
-        not_member_chats = []
-        for chat_id, username in settings.REQUIRED_CHATS:
-            try:
-                member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-                if member.status not in ('member', 'administrator', 'creator'):
-                    not_member_chats.append((chat_id, username))
-                    logger.debug(f"User {user_id} not a member of {username}")
-            except Exception as e:
-                logger.error(f"Error checking membership for {username}: {e}")
-                not_member_chats.append((chat_id, username))
-
-        if not not_member_chats:
-            logger.debug(f"User {user_id} is member of all required chats")
-            return await handler(event, data)
-
-        await self._send_membership_required_message(event, not_member_chats)
-        return
-
-    async def _should_skip_middleware(self, event) -> bool:
-        if (isinstance(event, types.CallbackQuery) and
-                event.data == "check_membership"):
-            return True
-
-        if isinstance(event, types.Message) and event.text:
-            text = event.text.strip()
-
-            if text.startswith(('/', '!')):
-                command = text.split('@')[0].lower()
-
-                skip_commands = {
-                    '/start', '/help', '/cancel',
-                    '/stats', '/broadcast', '/pending_questions',  # Admin komandalari
-                    '!start', '!help', '!cancel'
-                }
-
-                if any(command.startswith(cmd) for cmd in skip_commands):
-                    return True
-
-    async def _send_membership_required_message(self, event, not_member_chats):
-        rows = []
-        for _, username in not_member_chats:
-            rows.append([
-                InlineKeyboardButton(
-                    text=f"➕ {username} ga a'zo bo'lish",
-                    url=f"https://t.me/{username[1:]}"
-                )
-            ])
-
-        rows.append([
-            InlineKeyboardButton(
-                text="🔄 Tekshirish",
-                callback_data="check_membership"
-            )
-        ])
-
-        markup = InlineKeyboardMarkup(inline_keyboard=rows)
-        chat_links = ', '.join([username for _, username in not_member_chats])
-
-        message_text = (
-            f"⚠️ <b>A'zolik talabi</b>\n\n"
-            f"❌ Botdan foydalanish uchun quyidagi kanal/guruhlarga a'zo bo'lishingiz kerak:\n"
-            f"<code>{chat_links}</code>\n\n"
-            f"🔗 Yuqoridagi tugmalar orqali a'zo bo'ling va\n"
-            f"«Tekshirish» tugmasini bosing."
-        )
-
-        try:
-            if isinstance(event, types.Message):
-                await event.answer(message_text, reply_markup=markup, parse_mode="HTML")
-            elif isinstance(event, types.CallbackQuery):
-                await event.message.answer(message_text, reply_markup=markup, parse_mode="HTML")
-                await event.answer()
-        except Exception as e:
-            logger.error(f"Error sending membership message: {e}")
+        logger.info("User %s blocked by membership check: %s", user.id, missing)
+        text, markup = membership_text(missing), membership_keyboard(missing)
+        if isinstance(event, Message):
+            await event.answer(text, reply_markup=markup)
+        elif isinstance(event, CallbackQuery):
+            await event.answer()
+            if event.message:
+                await event.message.answer(text, reply_markup=markup)
+        return None

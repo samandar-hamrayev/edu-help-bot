@@ -1,137 +1,158 @@
-from aiogram import Router, types, F, Bot
-from aiogram.filters import StateFilter
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from core.models import Answer, Question, TelegramUser
-from django.utils import timezone
-from asgiref.sync import sync_to_async
+"""Admin flow: claim a question, collect a multi-part answer, deliver it."""
 
-answer_router = Router()
+import logging
+
+from aiogram import Bot, F, Router
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from django.core.exceptions import ValidationError
+
+from bot.delivery import deliver_answer
+from bot.filters import IsAdmin
+from bot.keyboards import parse_id
+from core.models import ANSWER_TEXT_MAX_LENGTH
+from core.services import (
+    CAPTION_MAX_LENGTH,
+    MAX_ANSWER_PARTS,
+    ClaimResult,
+    TelegramProfile,
+    acreate_answer,
+    claim_question,
+    release_question,
+    upsert_telegram_user,
+)
+
+logger = logging.getLogger(__name__)
+
+answer_router = Router(name="answer")
+answer_router.message.filter(IsAdmin())
+answer_router.callback_query.filter(IsAdmin())
+
 
 class AnswerStates(StatesGroup):
     collecting = State()
 
+
+ANSWER_KEYBOARD = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Javobni yuborish", callback_data="send_answer")],
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_answer")],
+    ]
+)
+
+CLAIM_ERRORS = {
+    ClaimResult.NOT_FOUND: "❗ Savol topilmadi.",
+    ClaimResult.ALREADY_ANSWERED: "❗ Bu savolga allaqachon javob berilgan.",
+    ClaimResult.LOCKED: "⏳ Bu savol ustida boshqa admin ishlamoqda.",
+}
+
+
+def message_to_part(message: Message) -> dict | None:
+    if message.text:
+        return {"type": "text", "text": message.text}
+    if message.photo:
+        return {"type": "photo", "file_id": message.photo[-1].file_id, "caption": message.caption}
+    if message.video:
+        return {"type": "video", "file_id": message.video.file_id, "caption": message.caption}
+    if message.voice:
+        return {"type": "voice", "file_id": message.voice.file_id}
+    if message.document:
+        return {"type": "document", "file_id": message.document.file_id, "caption": message.caption}
+    return None
+
+
 @answer_router.callback_query(F.data.startswith("answer_q_"))
-async def start_answering(call: CallbackQuery, state: FSMContext):
-    question_id = int(call.data.split("_")[-1])
-    question = await sync_to_async(Question.objects.get)(id=question_id)
-
-    if question.is_answered:
-        await call.answer("❗ Bu savolga allaqachon javob berilgan. Boshqa savollarni ko'ring.", show_alert=True)
+async def start_answering(call: CallbackQuery, state: FSMContext) -> None:
+    question_id = parse_id(call.data)
+    if question_id is None:
+        await call.answer("❗ Noto'g'ri so'rov.", show_alert=True)
         return
 
-    if question.in_progress:
-        await call.answer("⏳ Bu savol ustida boshqa admin ishlamoqda. Kutib turing yoki boshqasini tanlang.", show_alert=True)
-        return
+    previous = await state.get_data()
+    if await state.get_state() == AnswerStates.collecting.state and previous.get("question_id") not in (
+        None,
+        question_id,
+    ):
+        await release_question(previous["question_id"])
 
-    question.in_progress = True
-    await sync_to_async(question.save)()
+    admin, _ = await upsert_telegram_user(TelegramProfile.from_aiogram(call.from_user))
+    result = await claim_question(question_id, admin)
+    if result is not ClaimResult.CLAIMED:
+        await call.answer(CLAIM_ERRORS[result], show_alert=True)
+        return
 
     await state.set_state(AnswerStates.collecting)
-    await state.set_data({
-        "question_id": question_id,
-        "content": []  # List for all parts
-    })
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Javobni yuborish", callback_data="send_answer")],
-        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_answer")]
-    ])
+    await state.set_data({"question_id": question_id, "content": []})
     await call.message.answer(
-        "📝 Javobni shakllantiring: Matn yozing, rasm, video, ovoz yoki hujjat yuboring.\n"
-        "Bir necha qism qo'shishingiz mumkin. Tayyor bo'lganda 'Yuborish' ni bosing.",
-        reply_markup=markup
+        f"📝 Savol #{question_id} uchun javob yozing: matn, rasm, video, ovoz yoki hujjat yuboring.\n"
+        "Bir necha qism qo'shishingiz mumkin. Tayyor bo'lganda «Javobni yuborish» ni bosing.",
+        reply_markup=ANSWER_KEYBOARD,
     )
     await call.answer()
 
-@answer_router.message(StateFilter(AnswerStates.collecting), F.content_type.in_(["text", "photo", "voice", "video", "document"]))
-async def collect_media(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    content = data['content']
 
-    if message.text:
-        content.append({"type": "text", "text": message.text})
-    elif message.photo:
-        content.append({"type": "photo", "file_id": message.photo[-1].file_id, "caption": message.caption})
-    elif message.video:
-        content.append({"type": "video", "file_id": message.video.file_id, "caption": message.caption})
-    elif message.voice:
-        content.append({"type": "voice", "file_id": message.voice.file_id})
-    elif message.document:
-        content.append({"type": "document", "file_id": message.document.file_id, "caption": message.caption})
-
-    await state.set_data(data)
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Javobni yuborish", callback_data="send_answer")],
-        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_answer")]
-    ])
-    await message.answer("✅ Qism qo'shildi. Davom eting yoki yuboring:", reply_markup=markup)
-
-@answer_router.callback_query(F.data == "cancel_answer", StateFilter(AnswerStates.collecting))
-async def cancel_answering(call: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    question_id = data.get("question_id")
-    if question_id:
-        question = await sync_to_async(Question.objects.get)(id=question_id)
-        question.in_progress = False
-        await sync_to_async(question.save)()
-    await call.message.answer("❌ Javob berish bekor qilindi.")
-    await state.clear()
-    await call.answer()
-
-@answer_router.callback_query(F.data == "send_answer", StateFilter(AnswerStates.collecting))
-async def send_all_to_user(call: CallbackQuery, state: FSMContext, bot: Bot):
-    data = await state.get_data()
-    if not data.get('content'):
-        await call.answer("⚠️ Hech qanday kontent qo'shilmagan. Iltimos, qaytadan boshlang.", show_alert=True)
+@answer_router.message(AnswerStates.collecting, ~F.text.startswith("/"))
+async def collect_part(message: Message, state: FSMContext) -> None:
+    part = message_to_part(message)
+    if part is None:
+        await message.answer("⚠️ Faqat matn, rasm, video, ovoz yoki hujjat qabul qilinadi.")
+        return
+    if part["type"] == "text" and len(part["text"]) > ANSWER_TEXT_MAX_LENGTH:
+        await message.answer(f"⚠️ Matn {ANSWER_TEXT_MAX_LENGTH} belgidan oshmasligi kerak.")
+        return
+    if len(part.get("caption") or "") > CAPTION_MAX_LENGTH:
+        await message.answer(f"⚠️ Izoh {CAPTION_MAX_LENGTH} belgidan oshmasligi kerak.")
         return
 
-    # Prefetch user with select_related
-    question = await sync_to_async(Question.objects.select_related('user').get)(id=data['question_id'])
-    user = question.user
-
-    # Get or create admin_user
-    admin_user, _ = await sync_to_async(TelegramUser.objects.get_or_create)(
-        telegram_id=call.from_user.id,
-        defaults={
-            'username': call.from_user.username,
-            'first_name': call.from_user.first_name,
-            'last_name': call.from_user.last_name,
-            'language_code': call.from_user.language_code,
-            'is_admin': True
-        }
+    data = await state.get_data()
+    content = data.get("content", [])
+    if len(content) >= MAX_ANSWER_PARTS:
+        await message.answer(f"⚠️ Ko'pi bilan {MAX_ANSWER_PARTS} qism. Endi «Javobni yuborish» ni bosing.")
+        return
+    content.append(part)
+    await state.update_data(content=content)
+    await message.answer(
+        f"✅ Qism qo'shildi ({len(content)}). Davom eting yoki yuboring:", reply_markup=ANSWER_KEYBOARD
     )
 
-    # Send to user
-    await bot.send_message(user.telegram_id, "📬 Sizning savolingizga javob keldi:")
-    for item in data['content']:
-        item_type = item.get('type')
-        if item_type == 'text':
-            await bot.send_message(user.telegram_id, item['text'])
-        elif item_type == 'photo':
-            await bot.send_photo(user.telegram_id, item['file_id'], caption=item.get('caption'))
-        elif item_type == 'video':
-            await bot.send_video(user.telegram_id, item['file_id'], caption=item.get('caption'))
-        elif item_type == 'voice':
-            await bot.send_voice(user.telegram_id, item['file_id'])
-        elif item_type == 'document':
-            await bot.send_document(user.telegram_id, item['file_id'], caption=item.get('caption'))
 
-    # Save to DB
-    await sync_to_async(Answer.objects.create)(
-        question=question,
-        responder=admin_user,
-        content=data['content'],
-        created_at=timezone.now()
-    )
+@answer_router.callback_query(AnswerStates.collecting, F.data == "cancel_answer")
+async def cancel_answering(call: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if data.get("question_id"):
+        await release_question(data["question_id"])
+    await state.clear()
+    await call.message.answer("❌ Javob berish bekor qilindi.")
+    await call.answer()
 
-    question.is_answered = True
-    question.in_progress = False
-    await sync_to_async(question.save)()
 
-    await call.message.answer("✅ Javob muvaffaqiyatli yuborildi va saqlandi!")
+@answer_router.callback_query(AnswerStates.collecting, F.data == "send_answer")
+async def send_answer(call: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    data = await state.get_data()
+    if not data.get("content"):
+        await call.answer("⚠️ Hech qanday qism qo'shilmagan.", show_alert=True)
+        return
+
+    admin, _ = await upsert_telegram_user(TelegramProfile.from_aiogram(call.from_user))
+    try:
+        answer = await acreate_answer(data["question_id"], data["content"], responder=admin)
+    except ValidationError as exc:
+        await call.answer(f"⚠️ {exc.messages[0]}", show_alert=True)
+        return
     await state.clear()
     await call.answer()
 
-def register(dp):
-    dp.include_router(answer_router)
+    # The answer is saved; delivery problems are recorded on the Answer row and
+    # transient ones are retried by the outbox loop.
+    if await deliver_answer(bot, answer.pk):
+        await call.message.answer("✅ Javob foydalanuvchiga yuborildi va saqlandi!")
+    else:
+        await answer.arefresh_from_db(fields=["delivery_status", "delivery_error"])
+        if answer.delivery_status == answer.DeliveryStatus.FAILED:
+            await call.message.answer(
+                "⚠️ Javob saqlandi, lekin foydalanuvchiga yetkazib bo'lmadi "
+                "(ehtimol botni bloklagan). Holatni admin paneldan ko'rishingiz mumkin."
+            )
+        else:
+            await call.message.answer("🕓 Javob saqlandi; yetkazish keyinroq qayta urinib ko'riladi.")
