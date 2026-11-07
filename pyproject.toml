@@ -1,0 +1,63 @@
+[project]
+name = "edu-help-bot"
+version = "1.0.0"
+description = "Telegram Q&A support bot for students (aiogram 3) with a Django admin panel."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["core/migrations/0001_*.py", "core/migrations/0002_*.py", "core/migrations/0003_*.py", "core/migrations/0004_*.py"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "S",    # flake8-bandit (security)
+    "DJ",   # flake8-django
+    "ASYNC",# flake8-async
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "RUF001", # ambiguous unicode in strings (Uzbek apostrophes / emoji are intentional)
+    "RUF012", # mutable class attrs are idiomatic in Django admin/forms
+    "DJ001",  # nullable CharFields kept for backward compatibility with existing data
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+"core/migrations/**" = ["E501", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["test_*.py"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+# Test-only defaults (D: = only if not already set, so CI/Makefile values win).
+env = [
+    "D:SECRET_KEY=test-secret-key-not-for-production",
+    "D:BOT_TOKEN=",
+]
+filterwarnings = ["ignore::DeprecationWarning:aiogram.*"]
+
+[tool.coverage.run]
+source = ["bot", "core", "config"]
+omit = ["*/migrations/*", "config/asgi.py", "config/wsgi.py"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = ["if __name__ == .__main__.:", "pragma: no cover"]
