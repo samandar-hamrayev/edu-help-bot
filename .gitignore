@@ -42,3 +42,17 @@ logs/
 *.sql
 gunicorn_access_logs
 gunicorn_error_logs
+
+# Secrets / local env (keep the template)
+.env.*
+!.env.example
+*.sqlite3
+*.sqlite3-journal
+/mediafiles/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
